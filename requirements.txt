@@ -1,0 +1,39 @@
+# Dipendenze Maintainer Agent - Manutenzione Predittiva
+# ======================================================
+
+# CLI
+typer>=0.9.0
+rich>=13.0.0
+
+# Configurazione
+pyyaml>=6.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# HTTP client
+httpx>=0.25.0
+
+# LLM
+openai>=1.0.0
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Date/time
+python-dateutil>=2.8.0
+
+# === LIBRERIE STATISTICHE ===
+
+# Survival Analysis (Kaplan-Meier, Cox PH)
+lifelines>=0.27.0
+
+# Distribuzioni statistiche (Weibull)
+scipy>=1.11.0
+
+# Database (opzionale)
+# psycopg2-binary>=2.9.0
+# sqlalchemy>=2.0.0
+
+# Web interface (opzionale)
+# streamlit>=1.30.0

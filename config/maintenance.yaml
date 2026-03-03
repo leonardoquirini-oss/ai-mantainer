@@ -1,0 +1,64 @@
+# Configurazione Sistema Manutenzione Predittiva
+# ===============================================
+
+# Giorni di storico da considerare
+history_days: 365
+
+# Soglia minima campioni per analisi affidabili
+min_campioni_weibull: 5
+min_campioni_cox: 10
+min_guasti_nhpp: 3
+
+# Soglie per classificazione Weibull (parametro beta)
+weibull:
+  # beta < infantile_max => guasti infantili
+  beta_infantile_max: 0.8
+  # beta <= casuale_max => guasti casuali
+  beta_casuale_max: 1.2
+  # beta > casuale_max => guasti da usura
+
+# Soglie per trend NHPP (parametro beta Power Law)
+nhpp:
+  # beta > deterioramento => trend deterioramento
+  beta_deterioramento: 1.15
+  # beta < miglioramento => trend miglioramento
+  beta_miglioramento: 0.85
+
+# Affidabilità target default per calcolo intervalli
+affidabilita_target_default: 0.90
+
+# Tipi mezzo supportati
+tipi_mezzo:
+  - semirimorchio
+  - trattore
+  - container
+  - furgone
+
+# Tipi guasto supportati
+tipi_guasto:
+  - pneumatici
+  - freni
+  - motore
+  - trasmissione
+  - elettrico
+  - idraulico
+  - carrozzeria
+  - sospensioni
+  - revisione
+  - tagliando
+
+# Mappatura sinonimi per parsing
+sinonimi_tipo_mezzo:
+  semi: semirimorchio
+  trailer: semirimorchio
+  motrice: trattore
+  truck: trattore
+  van: furgone
+
+sinonimi_tipo_guasto:
+  gomme: pneumatici
+  ruote: pneumatici
+  frenata: freni
+  engine: motore
+  cambio: trasmissione
+  elettronica: elettrico
