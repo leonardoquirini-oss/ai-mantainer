@@ -47,7 +47,9 @@ def _parse_date(value: Any) -> Optional[str]:
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M:%S.%f",
         "%Y-%m-%d",
-        "%d/%m/%Y",
+        "%m/%d/%Y %H:%M:%S",  # US format con time (CSV AdHoc)
+        "%m/%d/%Y",           # US format
+        "%d/%m/%Y",           # EU format
         "%d-%m-%Y",
     ]
     for fmt in formats:
@@ -112,16 +114,46 @@ def ingest_from_adhoc(
 
     logger.info(f"Ricevuti {len(raw_data)} record da API")
 
+    # Debug: mostra prima riga per vedere nomi colonne
+    if raw_data:
+        first_row = raw_data[0]
+        logger.info(f"Colonne CSV: {list(first_row.keys())}")
+        logger.debug(f"Prima riga: {first_row}")
+
     # Prepara record per insert
     records = []
-    for row in raw_data:
+    skipped = {"no_targa": 0, "no_azienda": 0, "no_data": 0}
+
+    for idx, row in enumerate(raw_data):
+        # Normalizza chiavi a uppercase per compatibilità JSON/CSV
+        row = {k.upper(): v for k, v in row.items()}
         targa = _clean_targa(row.get("TARGA", ""))
         azienda = _clean_azienda(row.get("AZIENDA", ""))
         data_intervento = _parse_date(row.get("DATA_INTERVENTO"))
 
+        # Debug prima riga
+        if idx == 0:
+            logger.info(f"Prima riga - TARGA='{row.get('TARGA')}' -> '{targa}'")
+            logger.info(f"Prima riga - AZIENDA='{row.get('AZIENDA')}' -> '{azienda}'")
+            logger.info(f"Prima riga - DATA_INTERVENTO='{row.get('DATA_INTERVENTO')}' -> '{data_intervento}'")
+
         # Skip se mancano campi obbligatori
-        if not targa or not azienda or not data_intervento:
+        if not targa:
+            skipped["no_targa"] += 1
             continue
+        if not azienda:
+            skipped["no_azienda"] += 1
+            continue
+        if not data_intervento:
+            skipped["no_data"] += 1
+            continue
+
+        # DATA_IMM può essere in vari campi
+        data_imm = (
+            _parse_date(row.get("DATA_IMM"))
+            or _parse_date(row.get("DATA_IMM_MEZZO"))
+            or _parse_date(row.get("DATA_IMM_CTR"))
+        )
 
         records.append({
             "azienda": azienda,
@@ -132,10 +164,12 @@ def ingest_from_adhoc(
             "data_intervento": data_intervento,
             "causale": row.get("CAUSALE", ""),
             "costo": float(row.get("COSTO", 0) or 0),
-            "data_imm": _parse_date(row.get("DATA_IMM")),
+            "data_imm": data_imm,
         })
 
     logger.info(f"Record validi: {len(records)}")
+    if any(skipped.values()):
+        logger.info(f"Record scartati: {skipped}")
 
     if not records:
         logger.warning("Nessun record da inserire")

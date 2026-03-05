@@ -4,6 +4,8 @@ Connettore API AdHoc per recuperare storico manutenzioni.
 Identico a TIRConnector ma con URL diverso (http://192.168.0.12:9100/).
 """
 
+import csv
+import io
 import httpx
 import inspect
 import logging
@@ -78,7 +80,8 @@ class AdHocConnector:
     def execute_template(
         self,
         template_name: str,
-        parameters: Optional[Dict[str, Any]] = None
+        parameters: Optional[Dict[str, Any]] = None,
+        output_format: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Esegue un template di query predefinito.
@@ -86,6 +89,7 @@ class AdHocConnector:
         Args:
             template_name: Nome del template (es. elenco_manutenzioni)
             parameters: Parametri del template
+            output_format: Formato output ("json" o "csv")
 
         Returns:
             Risposta API con data, rowCount, columns
@@ -95,18 +99,63 @@ class AdHocConnector:
             "parameters": parameters or {}
         }
 
+        if output_format:
+            payload["outputFormat"] = output_format
+
         caller = _get_caller_name()
         logger.info(f"AdHoc API: POST /api/Query/templates/execute | caller: {caller}")
-        logger.info(f"AdHoc TEMPLATE: {template_name} | params: {parameters or {}}")
+        logger.info(f"AdHoc TEMPLATE: {template_name} | format: {output_format or 'json'}")
 
         response = self.client.post(
             "/api/Query/templates/execute",
             json=payload
         )
         response.raise_for_status()
+
+        # Se CSV, parsa il contenuto
+        if output_format == "csv":
+            return self._parse_csv_response(response.text)
+
         result = response.json()
         logger.info(f"AdHoc RESULT: {result.get('rowCount', 0)} righe")
         return result
+
+    def _parse_csv_response(self, csv_text: str) -> Dict[str, Any]:
+        """
+        Parsa una risposta CSV in formato dizionario.
+
+        Args:
+            csv_text: Contenuto CSV come stringa
+
+        Returns:
+            Dict con data (lista di dict) e rowCount
+        """
+        if not csv_text or not csv_text.strip():
+            return {"data": [], "rowCount": 0}
+
+        # Rimuovi BOM se presente
+        if csv_text.startswith('\ufeff'):
+            csv_text = csv_text[1:]
+
+        # Auto-detect delimiter
+        first_line = csv_text.split('\n')[0]
+        if ';' in first_line and ',' not in first_line:
+            delimiter = ';'
+        elif ',' in first_line:
+            delimiter = ','
+        else:
+            delimiter = ';'
+
+        # Usa csv.DictReader per parsing
+        reader = csv.DictReader(io.StringIO(csv_text), delimiter=delimiter)
+        data = list(reader)
+
+        logger.info(f"AdHoc CSV RESULT: {len(data)} righe (delimiter: '{delimiter}')")
+        return {
+            "data": data,
+            "rowCount": len(data),
+            "columns": reader.fieldnames or []
+        }
 
     def execute_query(self, query: str) -> Dict[str, Any]:
         """
@@ -135,7 +184,8 @@ class AdHocConnector:
     def get_manutenzioni(
         self,
         data_start: Optional[date] = None,
-        data_stop: Optional[date] = None
+        data_stop: Optional[date] = None,
+        output_format: str = "csv"
     ) -> List[Dict[str, Any]]:
         """
         Recupera l'elenco delle manutenzioni dal database AdHoc.
@@ -143,6 +193,7 @@ class AdHocConnector:
         Args:
             data_start: Data inizio periodo (default: 01/01/2015)
             data_stop: Data fine periodo (default: oggi)
+            output_format: Formato output ("json" o "csv", default: csv)
 
         Returns:
             Lista di dizionari con i dati delle manutenzioni
@@ -163,7 +214,8 @@ class AdHocConnector:
             {
                 "dateStart": data_start_str,
                 "dateStop": data_stop_str
-            }
+            },
+            output_format=output_format
         )
 
         data = result.get("data", [])
@@ -173,15 +225,16 @@ class AdHocConnector:
     def health_check(self) -> bool:
         """Verifica la connessione all'API"""
         try:
-            # Prova a recuperare un piccolo set di dati
+            # Prova a recuperare un piccolo set di dati (JSON per health check, più veloce)
             result = self.execute_template(
                 "elenco_manutenzioni",
                 {
                     "dateStart": "01/01/2024",
                     "dateStop": "31/01/2024"
-                }
+                },
+                output_format="json"
             )
-            return "data" in result
+            return "data" in result or "rowCount" in result
         except Exception as e:
             logger.error(f"AdHoc health_check FAILED: {e}")
             return False
