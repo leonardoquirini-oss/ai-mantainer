@@ -276,7 +276,11 @@ class MaintenanceConfig:
             )
 
         # Configurazioni per tipo mezzo
-        for tipo_mezzo, mezzo_data in data.get("tipi_mezzo", {}).items():
+        tipi_mezzo_data = data.get("tipi_mezzo", {})
+        # Se è una lista, converti in dict vuoto (compatibilità con config semplice)
+        if isinstance(tipi_mezzo_data, list):
+            tipi_mezzo_data = {}
+        for tipo_mezzo, mezzo_data in tipi_mezzo_data.items():
             intervalli = {}
             for tipo, int_data in mezzo_data.get("intervalli", {}).items():
                 intervalli[tipo] = IntervalloManutenzione(

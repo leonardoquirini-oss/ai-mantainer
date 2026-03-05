@@ -7,6 +7,7 @@ from .evento_manutenzione import (
     Mezzo,
     TipoMezzo,
     TipoGuasto,
+    CategoriaIntervento,
     DatasetManutenzione,
 )
 from .analisi import (
@@ -25,6 +26,7 @@ __all__ = [
     "Mezzo",
     "TipoMezzo",
     "TipoGuasto",
+    "CategoriaIntervento",
     "DatasetManutenzione",
     "RisultatoWeibull",
     "RisultatoKaplanMeier",

@@ -26,6 +26,7 @@ from ..models import (
     EventoManutenzione,
     Mezzo,
     DatasetManutenzione,
+    CategoriaIntervento,
     RisultatoWeibull,
     RisultatoKaplanMeier,
     RisultatoCoxPH,
@@ -196,6 +197,91 @@ class MaintenanceOptimizer:
         return evento_tipo.lower() == tipo_guasto.lower()
 
     # ==========================================================================
+    # PREPARAZIONE DATI PER CATEGORIE (con pesi proporzionali)
+    # ==========================================================================
+
+    def prepara_dati_sopravvivenza_categoria(
+        self,
+        eventi: List[EventoManutenzione],
+        mezzi: List[Mezzo],
+        categoria: CategoriaIntervento,
+        data_fine_osservazione: date = None
+    ) -> pd.DataFrame:
+        """
+        Prepara DataFrame per analisi di sopravvivenza basata su CategoriaIntervento.
+
+        Supporta pesi proporzionali per eventi multi-categoria:
+        - Se un intervento ha 2 categorie, conta 0.5 per ciascuna
+        - Se un intervento ha 3 categorie, conta 0.33 per ciascuna
+
+        Args:
+            eventi: Lista eventi manutenzione
+            mezzi: Lista tutti i mezzi
+            categoria: Categoria intervento da analizzare
+            data_fine_osservazione: Data fine periodo osservazione
+
+        Returns:
+            DataFrame con colonne: mezzo_id, tipo_mezzo, durata, evento, peso
+        """
+        if data_fine_osservazione is None:
+            data_fine_osservazione = date.today()
+
+        # Filtra eventi che hanno questa categoria
+        eventi_categoria = [
+            (e, e.get_peso_categoria(categoria))
+            for e in eventi
+            if e.ha_categoria(categoria)
+        ]
+
+        # Raggruppa per mezzo - prendi primo guasto di questa categoria
+        primo_guasto_per_mezzo = {}
+        for e, peso in eventi_categoria:
+            if e.mezzo_id not in primo_guasto_per_mezzo:
+                primo_guasto_per_mezzo[e.mezzo_id] = (e, peso)
+            elif e.data_evento < primo_guasto_per_mezzo[e.mezzo_id][0].data_evento:
+                primo_guasto_per_mezzo[e.mezzo_id] = (e, peso)
+
+        records = []
+
+        # Mezzi con guasto per questa categoria
+        for mezzo_id, (evento, peso) in primo_guasto_per_mezzo.items():
+            eta_mesi = evento.eta_mezzo_mesi
+            if eta_mesi is not None and eta_mesi >= 0:
+                tipo_mezzo = evento.tipo_mezzo
+                if hasattr(tipo_mezzo, 'value'):
+                    tipo_mezzo = tipo_mezzo.value
+                records.append({
+                    "mezzo_id": mezzo_id,
+                    "tipo_mezzo": tipo_mezzo,
+                    "durata": max(1, eta_mesi),
+                    "evento": 1,
+                    "peso": peso  # Peso proporzionale
+                })
+
+        # Mezzi senza guasto per questa categoria (censurati)
+        mezzi_con_guasto = set(primo_guasto_per_mezzo.keys())
+        for mezzo in mezzi:
+            if mezzo.mezzo_id not in mezzi_con_guasto:
+                eta_mesi = mezzo.eta_mesi_a_data(data_fine_osservazione)
+                if eta_mesi is not None and eta_mesi > 0:
+                    tipo_mezzo = mezzo.tipo_mezzo
+                    if hasattr(tipo_mezzo, 'value'):
+                        tipo_mezzo = tipo_mezzo.value
+                    records.append({
+                        "mezzo_id": mezzo.mezzo_id,
+                        "tipo_mezzo": tipo_mezzo,
+                        "durata": eta_mesi,
+                        "evento": 0,
+                        "peso": 1.0  # Censurati hanno peso pieno
+                    })
+
+        return pd.DataFrame(records)
+
+    def _match_categoria(self, evento: EventoManutenzione, categoria: CategoriaIntervento) -> bool:
+        """Verifica se l'evento ha una specifica categoria"""
+        return evento.ha_categoria(categoria)
+
+    # ==========================================================================
     # ANALISI KAPLAN-MEIER
     # ==========================================================================
 
@@ -247,9 +333,12 @@ class MaintenanceOptimizer:
         median = kmf.median_survival_time_
         if not np.isinf(median):
             result.mediana_mesi = float(median)
-            ci = kmf.confidence_interval_median_survival_time_
-            result.mediana_ci_lower = float(ci.iloc[0, 0]) if not ci.empty else None
-            result.mediana_ci_upper = float(ci.iloc[0, 1]) if not ci.empty else None
+            # CI per mediana (non disponibile in tutte le versioni di lifelines)
+            if hasattr(kmf, 'confidence_interval_median_survival_time_'):
+                ci = kmf.confidence_interval_median_survival_time_
+                if ci is not None and not ci.empty:
+                    result.mediana_ci_lower = float(ci.iloc[0, 0])
+                    result.mediana_ci_upper = float(ci.iloc[0, 1])
 
         # Sopravvivenza a tempi specifici
         for mesi in [12, 24, 36, 48]:
@@ -297,6 +386,87 @@ class MaintenanceOptimizer:
             # % mezzi che hanno durato almeno 'mesi' senza guasto
             sopravvissuti = ((df["durata"] > mesi) | (df["evento"] == 0)).sum()
             setattr(result, f"sopravvivenza_{mesi}_mesi", sopravvissuti / len(df))
+
+        return result
+
+    def analisi_kaplan_meier_categoria(
+        self,
+        df: pd.DataFrame,
+        tipo_mezzo: str = None,
+        categoria: CategoriaIntervento = None
+    ) -> Optional[RisultatoKaplanMeier]:
+        """
+        Esegue analisi Kaplan-Meier con supporto per pesi proporzionali.
+
+        Usa la colonna 'peso' del DataFrame per pesare gli eventi.
+        Utile per interventi multi-categoria.
+
+        Args:
+            df: DataFrame con colonne durata, evento, peso
+            tipo_mezzo: Filtra per tipo mezzo (opzionale)
+            categoria: Categoria analizzata
+
+        Returns:
+            RisultatoKaplanMeier o None se dati insufficienti
+        """
+        if not self._lifelines_available:
+            return self._kaplan_meier_semplificato(
+                df, tipo_mezzo, categoria.value if categoria else ""
+            )
+
+        from lifelines import KaplanMeierFitter
+
+        # Filtra per tipo mezzo se specificato
+        if tipo_mezzo:
+            df = df[df["tipo_mezzo"] == tipo_mezzo]
+
+        if len(df) < MIN_CAMPIONI_WEIBULL:
+            logger.warning(f"Dati insufficienti per KM categoria: {len(df)} campioni")
+            return None
+
+        kmf = KaplanMeierFitter()
+
+        # Usa pesi se disponibili
+        if "peso" in df.columns:
+            kmf.fit(
+                df["durata"],
+                event_observed=df["evento"],
+                weights=df["peso"]
+            )
+        else:
+            kmf.fit(df["durata"], event_observed=df["evento"])
+
+        # Estrai risultati
+        categoria_str = categoria.value if categoria else "N/A"
+        result = RisultatoKaplanMeier(
+            tipo_mezzo=tipo_mezzo or "tutti",
+            tipo_guasto=categoria_str,  # Usa categoria come tipo_guasto
+            n_campioni=len(df),
+            n_eventi=int(df["evento"].sum()),
+            n_censurati=int((df["evento"] == 0).sum()),
+        )
+
+        # Mediana
+        median = kmf.median_survival_time_
+        if not np.isinf(median):
+            result.mediana_mesi = float(median)
+
+        # Sopravvivenza a tempi specifici
+        for mesi in [12, 24, 36, 48]:
+            try:
+                surv = kmf.predict(mesi)
+                setattr(result, f"sopravvivenza_{mesi}_mesi", float(surv))
+            except Exception:
+                pass
+
+        # Dati per plotting
+        result.tempi = list(kmf.survival_function_.index)
+        result.survival = list(kmf.survival_function_.iloc[:, 0])
+
+        ci_df = kmf.confidence_interval_survival_function_
+        if not ci_df.empty:
+            result.ci_lower = list(ci_df.iloc[:, 0])
+            result.ci_upper = list(ci_df.iloc[:, 1])
 
         return result
 
@@ -457,6 +627,130 @@ class MaintenanceOptimizer:
             result.intervallo_manutenzione_mesi = int(t_manutenzione)
 
         return result
+
+    def analisi_weibull_categoria(
+        self,
+        df: pd.DataFrame,
+        tipo_mezzo: str,
+        categoria: CategoriaIntervento,
+        affidabilita_target: float = 0.90
+    ) -> Optional[RisultatoWeibull]:
+        """
+        Fitta distribuzione Weibull con supporto per pesi proporzionali.
+
+        Usa pesi per interventi multi-categoria: se un intervento
+        è classificato in 2 categorie, conta 0.5 per ciascuna.
+
+        Args:
+            df: DataFrame con colonne durata, evento, peso
+            tipo_mezzo: Tipo mezzo analizzato
+            categoria: Categoria intervento analizzata
+            affidabilita_target: Affidabilità target
+
+        Returns:
+            RisultatoWeibull o None se dati insufficienti
+        """
+        # Filtra per tipo mezzo
+        df_filtrato = df[df["tipo_mezzo"] == tipo_mezzo]
+
+        # Prendi solo eventi (guasti effettivi)
+        df_eventi = df_filtrato[df_filtrato["evento"] == 1]
+        tempi = df_eventi["durata"].values
+
+        # Pesi se disponibili
+        pesi = df_eventi["peso"].values if "peso" in df_eventi.columns else None
+
+        # Conta pesata dei campioni
+        n_campioni_pesato = sum(pesi) if pesi is not None else len(tempi)
+
+        if n_campioni_pesato < MIN_CAMPIONI_WEIBULL:
+            logger.warning(
+                f"Dati insufficienti per Weibull {tipo_mezzo}/{categoria.value}: "
+                f"{n_campioni_pesato:.1f} eventi pesati"
+            )
+            return None
+
+        # Fit Weibull (con pesi se disponibili)
+        beta, eta, log_lik = self._fit_weibull_pesato(tempi, pesi)
+
+        if beta is None:
+            return None
+
+        # Classifica
+        if beta < BETA_INFANTILE_MAX:
+            classificazione = ClassificazioneGuasto.INFANTILE
+        elif beta <= BETA_CASUALE_MAX:
+            classificazione = ClassificazioneGuasto.CASUALE
+        else:
+            classificazione = ClassificazioneGuasto.USURA
+
+        result = RisultatoWeibull(
+            tipo_mezzo=tipo_mezzo,
+            tipo_guasto=categoria.value,  # Usa categoria come tipo_guasto
+            beta=beta,
+            eta=eta,
+            n_campioni=int(n_campioni_pesato),
+            classificazione=classificazione,
+            affidabilita_target=affidabilita_target,
+            log_likelihood=log_lik,
+        )
+
+        # Calcola affidabilità R(t) = exp(-(t/eta)^beta)
+        for mesi in [6, 12, 24, 36, 48]:
+            R = math.exp(-((mesi / eta) ** beta))
+            setattr(result, f"affidabilita_{mesi}_mesi", R)
+
+        # AIC
+        result.aic = 2 * 2 - 2 * log_lik
+
+        # Intervallo manutenzione (solo se usura)
+        if classificazione == ClassificazioneGuasto.USURA:
+            t_manutenzione = eta * ((-math.log(affidabilita_target)) ** (1 / beta))
+            result.intervallo_manutenzione_mesi = int(t_manutenzione)
+
+        return result
+
+    def _fit_weibull_pesato(
+        self,
+        tempi: np.ndarray,
+        pesi: Optional[np.ndarray] = None
+    ) -> Tuple[Optional[float], Optional[float], float]:
+        """
+        Fitta distribuzione Weibull con supporto per pesi.
+
+        Se pesi è None, usa fit standard.
+        Se pesi è fornito, usa weighted MLE.
+        """
+        if pesi is None:
+            return self._fit_weibull(tempi)
+
+        try:
+            from scipy.stats import weibull_min
+            from scipy.optimize import minimize
+
+            # Weighted MLE per Weibull
+            def neg_log_lik(params):
+                c, scale = params
+                if c <= 0 or scale <= 0:
+                    return np.inf
+                ll = weibull_min.logpdf(tempi, c, loc=0, scale=scale)
+                return -np.sum(pesi * ll)
+
+            # Initial guess da fit non pesato
+            c_init, _, scale_init = weibull_min.fit(tempi, floc=0)
+            result = minimize(neg_log_lik, [c_init, scale_init], method='Nelder-Mead')
+
+            if result.success:
+                c, scale = result.x
+                log_lik = -result.fun
+                return (float(c), float(scale), float(log_lik))
+            else:
+                # Fallback a fit non pesato
+                return self._fit_weibull(tempi)
+
+        except Exception as e:
+            logger.warning(f"Errore fit Weibull pesato: {e}, uso fit standard")
+            return self._fit_weibull(tempi)
 
     def _fit_weibull(self, tempi: np.ndarray) -> Tuple[Optional[float], Optional[float], float]:
         """
@@ -682,6 +976,96 @@ class MaintenanceOptimizer:
 
         # Calcola statistiche
         piano.statistiche = self._calcola_statistiche_piano(eventi, piano)
+
+        return piano
+
+    def genera_piano_manutenzione_categorie(
+        self,
+        eventi: List[EventoManutenzione],
+        mezzi: List[Mezzo],
+        affidabilita_target: float = 0.90
+    ) -> PianoManutenzione:
+        """
+        Genera piano di manutenzione usando le 15 categorie AdHoc.
+
+        Usa pesi proporzionali per interventi multi-categoria.
+
+        Args:
+            eventi: Lista storico eventi manutenzione
+            mezzi: Lista mezzi della flotta
+            affidabilita_target: Affidabilità target (default 90%)
+
+        Returns:
+            PianoManutenzione completo basato su categorie
+        """
+        piano = PianoManutenzione(
+            data_generazione=date.today(),
+            periodo_analisi_mesi=self._config.history_days // 30
+        )
+
+        # Identifica tipi mezzo e categorie presenti
+        tipi_mezzo = set()
+        categorie_presenti = set()
+
+        for e in eventi:
+            tm = e.tipo_mezzo.value if hasattr(e.tipo_mezzo, 'value') else e.tipo_mezzo
+            tipi_mezzo.add(tm)
+            for cat in e.categorie:
+                categorie_presenti.add(cat)
+
+        logger.info(
+            f"Piano manutenzione categorie: "
+            f"{len(tipi_mezzo)} tipi mezzo, {len(categorie_presenti)} categorie"
+        )
+
+        # Per ogni categoria
+        for categoria in sorted(categorie_presenti, key=lambda c: c.value):
+            # Prepara dati sopravvivenza con pesi
+            df = self.prepara_dati_sopravvivenza_categoria(eventi, mezzi, categoria)
+
+            if df.empty:
+                continue
+
+            # Analisi per ogni tipo mezzo
+            for tipo_mezzo in tipi_mezzo:
+                # Kaplan-Meier con pesi
+                km_result = self.analisi_kaplan_meier_categoria(
+                    df, tipo_mezzo, categoria
+                )
+                if km_result:
+                    piano.risultati_kaplan_meier.append(km_result)
+
+                # Weibull con pesi
+                weibull_result = self.analisi_weibull_categoria(
+                    df, tipo_mezzo, categoria, affidabilita_target
+                )
+                if weibull_result:
+                    piano.risultati_weibull.append(weibull_result)
+
+                    # Crea intervallo manutenzione
+                    intervallo = self._crea_intervallo_da_weibull(weibull_result)
+                    piano.intervalli.append(intervallo)
+
+            # Analisi Cox PH (confronto tra tipi mezzo)
+            if len(df["tipo_mezzo"].unique()) > 1:
+                cox_result = self.analisi_cox_ph(df, categoria.value)
+                if cox_result:
+                    piano.risultati_cox.append(cox_result)
+
+        # Analisi NHPP per mezzi con storico sufficiente
+        for mezzo in mezzi:
+            nhpp_result = self.analisi_nhpp(eventi, mezzo)
+            if nhpp_result:
+                piano.risultati_nhpp.append(nhpp_result)
+
+                # Identifica mezzi critici
+                if nhpp_result.trend == TrendNHPP.DETERIORAMENTO:
+                    piano.mezzi_critici.append(mezzo.mezzo_id)
+
+        # Calcola statistiche
+        piano.statistiche = self._calcola_statistiche_piano(eventi, piano)
+        piano.statistiche["usa_categorie_adhoc"] = True
+        piano.statistiche["n_categorie"] = len(categorie_presenti)
 
         return piano
 

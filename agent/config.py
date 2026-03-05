@@ -30,9 +30,19 @@ class LLMConfig:
 
 
 @dataclass
+class APIConfig:
+    """Configurazione per API esterne"""
+    base_url: str
+    api_key: str
+    timeout: float = 60.0
+
+
+@dataclass
 class Settings:
     """Configurazione completa dell'agente"""
     llm: LLMConfig
+    adhoc_api: APIConfig
+    tir_api: APIConfig
 
     @classmethod
     def load(cls, config_path: Optional[str] = None) -> "Settings":
@@ -42,10 +52,14 @@ class Settings:
 
         # Default se file non esiste
         llm_data = {}
+        adhoc_data = {}
+        tir_data = {}
         if Path(config_path).exists():
             with open(config_path, "r") as f:
                 data = yaml.safe_load(f) or {}
                 llm_data = data.get("llm", {})
+                adhoc_data = data.get("api", {}).get("adhoc", {})
+                tir_data = data.get("api", {}).get("tir", {})
 
         llm_config = LLMConfig(
             provider=llm_data.get("provider", "openrouter"),
@@ -56,7 +70,19 @@ class Settings:
             api_key=os.environ.get("OPENROUTER_API_KEY") or llm_data.get("api_key")
         )
 
-        return cls(llm=llm_config)
+        adhoc_config = APIConfig(
+            base_url=adhoc_data.get("base_url", "http://192.168.0.12:9100"),
+            api_key=os.environ.get("ADHOC_API_KEY") or adhoc_data.get("api_key", "12909db2-ffaa-4e55-8ef7-20d08bdfffa0"),
+            timeout=adhoc_data.get("timeout", 60.0)
+        )
+
+        tir_config = APIConfig(
+            base_url=tir_data.get("base_url", "http://192.168.0.12:9090"),
+            api_key=os.environ.get("TIR_API_KEY") or tir_data.get("api_key", "afd633be-262b-4d62-9089-bfe300a58ffa"),
+            timeout=tir_data.get("timeout", 120.0)  # Timeout più lungo per export CSV
+        )
+
+        return cls(llm=llm_config, adhoc_api=adhoc_config, tir_api=tir_config)
 
 
 # Singleton settings
