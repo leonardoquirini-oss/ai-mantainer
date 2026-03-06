@@ -17,6 +17,7 @@ from ..models import (
 from ..maintainer import MaintenanceOptimizer
 from ..maintainer.history_learner import get_data_loader
 from ..utils.categorizzatore import categorizza_riga, CATEGORIE
+from ..connectors import get_adhoc_connector
 
 # Import tools SQLite per km e viaggi
 from .sqlite_tools import (
@@ -35,14 +36,11 @@ _dataset_cache: Optional[DatasetManutenzione] = None
 
 
 def _get_dataset() -> DatasetManutenzione:
-    """Ottiene dataset dalla cache o lo carica"""
+    """Ottiene dataset dal database SQLite"""
     global _dataset_cache
     if _dataset_cache is None:
         loader = get_data_loader()
-        _dataset_cache = loader.carica_cache("dataset")
-        if _dataset_cache is None:
-            # Dataset vuoto se non c'è cache
-            _dataset_cache = DatasetManutenzione()
+        _dataset_cache = loader.carica_da_sqlite()
     return _dataset_cache
 
 
@@ -427,6 +425,117 @@ def analizza_mezzo(mezzo_id: str) -> Optional[Dict[str, Any]]:
     return {"info": "Dati insufficienti per analisi NHPP (servono almeno 3 guasti)"}
 
 
+def get_storico_guasti_mezzo(mezzo_id: str, limit: int = 50) -> Dict[str, Any]:
+    """
+    Mostra lo storico completo degli interventi di manutenzione per un mezzo specifico.
+
+    Restituisce l'elenco dettagliato di tutti i guasti/interventi registrati
+    per il mezzo, ordinati per data dal più recente al più vecchio.
+
+    Args:
+        mezzo_id: ID/targa del mezzo da analizzare
+        limit: Numero massimo di interventi da restituire (default 50)
+
+    Returns:
+        Dizionario con storico interventi e statistiche
+    """
+    dataset = _get_dataset()
+
+    # Ottieni eventi per questo mezzo
+    eventi = dataset.get_eventi_per_mezzo(mezzo_id)
+
+    if not eventi:
+        return {
+            "found": False,
+            "mezzo_id": mezzo_id,
+            "error": f"Nessun intervento trovato per il mezzo {mezzo_id}"
+        }
+
+    # Ordina per data decrescente (più recenti prima)
+    eventi_ordinati = sorted(eventi, key=lambda e: e.data_evento, reverse=True)
+
+    # Limita risultati
+    eventi_limitati = eventi_ordinati[:limit]
+
+    # Prepara lista interventi
+    interventi = []
+    for e in eventi_limitati:
+        interventi.append({
+            "data": e.data_evento.isoformat(),
+            "tipo_guasto": e.tipo_guasto.value if hasattr(e.tipo_guasto, 'value') else str(e.tipo_guasto),
+            "categorie": [c.value for c in e.categorie] if e.categorie else [],
+            "descrizione": e.descrizione,
+            "costo": e.costo,
+            "eta_mezzo_mesi": e.eta_mezzo_mesi
+        })
+
+    # Calcola statistiche
+    costo_totale = sum(e.costo for e in eventi)
+    tipi_guasto = {}
+    for e in eventi:
+        tipo = e.tipo_guasto.value if hasattr(e.tipo_guasto, 'value') else str(e.tipo_guasto)
+        tipi_guasto[tipo] = tipi_guasto.get(tipo, 0) + 1
+
+    # Trova mezzo per info aggiuntive
+    mezzo = None
+    for m in dataset.mezzi:
+        if m.mezzo_id == mezzo_id:
+            mezzo = m
+            break
+
+    return {
+        "found": True,
+        "mezzo_id": mezzo_id,
+        "tipo_mezzo": mezzo.tipo_mezzo.value if mezzo and hasattr(mezzo.tipo_mezzo, 'value') else None,
+        "data_immatricolazione": mezzo.data_immatricolazione.isoformat() if mezzo and mezzo.data_immatricolazione else None,
+        "totale_interventi": len(eventi),
+        "interventi_mostrati": len(eventi_limitati),
+        "costo_totale": round(costo_totale, 2),
+        "primo_intervento": eventi_ordinati[-1].data_evento.isoformat() if eventi_ordinati else None,
+        "ultimo_intervento": eventi_ordinati[0].data_evento.isoformat() if eventi_ordinati else None,
+        "distribuzione_tipi_guasto": tipi_guasto,
+        "interventi": interventi
+    }
+
+
+def verifica_stato_mezzo(targa: str) -> Dict[str, Any]:
+    """
+    Verifica se un veicolo/container è attualmente attivo nella flotta.
+
+    Interroga il database AdHoc per verificare se il mezzo non è stato
+    dismesso e risulta ancora in uso.
+
+    Args:
+        targa: Targa del veicolo o ID del container
+
+    Returns:
+        Stato del mezzo (attivo/non attivo)
+    """
+    # Normalizza la targa (uppercase, rimuovi spazi)
+    targa_normalizzata = targa.upper().replace(" ", "")
+
+    try:
+        connector = get_adhoc_connector()
+        mezzi_attivi = connector.get_mezzi_attivi()
+
+        # Verifica se la targa è nel set dei mezzi attivi
+        is_attivo = targa_normalizzata in mezzi_attivi
+
+        return {
+            "targa": targa,
+            "targa_normalizzata": targa_normalizzata,
+            "attivo": is_attivo,
+            "stato": "ATTIVO" if is_attivo else "NON ATTIVO / DISMESSO",
+            "totale_mezzi_attivi": len(mezzi_attivi)
+        }
+    except Exception as e:
+        return {
+            "targa": targa,
+            "error": str(e),
+            "hint": "Verifica che l'API AdHoc sia raggiungibile"
+        }
+
+
 def get_mezzi_critici() -> List[Dict[str, Any]]:
     """
     Identifica mezzi con trend di deterioramento (guasti crescenti).
@@ -761,6 +870,8 @@ TOOL_FUNCTIONS = {
     "get_previsioni_guasti": get_previsioni_guasti,
     "ottimizza_manutenzioni_combinate": ottimizza_manutenzioni_combinate,
     "genera_calendario_manutenzioni": genera_calendario_manutenzioni,
+    "get_storico_guasti_mezzo": get_storico_guasti_mezzo,
+    "verifica_stato_mezzo": verifica_stato_mezzo,
     # Tools SQLite km e viaggi
     "get_vehicle_history": get_vehicle_history,
     "search_vehicles": search_vehicles,
@@ -817,6 +928,12 @@ def _format_kv(data: Dict, exclude: List[str] = None) -> str:
 
 # Configurazione formattazione per tool specifici
 TOOL_FORMAT_CONFIG = {
+    "get_storico_guasti_mezzo": {
+        "list_key": "interventi",
+        "columns": ["data", "tipo_guasto", "descrizione", "costo"],
+        "headers": ["Data", "Tipo", "Descrizione", "Costo"],
+        "summary_keys": ["mezzo_id", "tipo_mezzo", "totale_interventi", "costo_totale", "primo_intervento", "ultimo_intervento"]
+    },
     "get_trip_history": {
         "list_key": "viaggi",
         "columns": ["data_viaggio", "km", "ruolo_in_viaggio", "controparte"],
@@ -1173,6 +1290,39 @@ TOOLS_SCHEMA = [
                     "type": "number",
                     "description": "Affidabilità target (0-1). Default 0.90",
                     "default": 0.90
+                }
+            }
+        }
+    },
+    {
+        "name": "get_storico_guasti_mezzo",
+        "description": "Mostra lo storico completo degli interventi di manutenzione per un mezzo specifico. Restituisce l'elenco dettagliato di tutti i guasti/interventi registrati, ordinati per data.",
+        "parameters": {
+            "type": "object",
+            "required": ["mezzo_id"],
+            "properties": {
+                "mezzo_id": {
+                    "type": "string",
+                    "description": "ID/targa del mezzo da analizzare (es. 'AD 24573', 'GBTU 1226')"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Numero massimo di interventi da restituire (default: 50)",
+                    "default": 50
+                }
+            }
+        }
+    },
+    {
+        "name": "verifica_stato_mezzo",
+        "description": "Verifica se un veicolo/container è attualmente attivo nella flotta (non dismesso). Interroga il database AdHoc in tempo reale.",
+        "parameters": {
+            "type": "object",
+            "required": ["targa"],
+            "properties": {
+                "targa": {
+                    "type": "string",
+                    "description": "Targa del veicolo o ID del container (es. 'GBTU 1226', 'AD 24573')"
                 }
             }
         }
