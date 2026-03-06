@@ -5,15 +5,16 @@ Scoring notturno della flotta.
 Calcola risk score per tutte le targhe e salva su DB.
 
 Usage:
-    python scripts/score_fleet.py [--no-save]
+    python scripts/score_fleet.py [--refresh-data] [--no-save]
 
 Tipicamente eseguito via cron:
-    0 3 * * * cd /home/berni/maintainer && python scripts/score_fleet.py
+    0 3 * * * cd /home/berni/maintainer && python scripts/score_fleet.py --refresh-data
 """
 
 import argparse
 import logging
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 # Setup path
@@ -24,6 +25,17 @@ sys.path.insert(0, str(project_root))
 def main():
     parser = argparse.ArgumentParser(
         description='Calcola risk score per tutta la flotta'
+    )
+    parser.add_argument(
+        '--refresh-data', '-r',
+        action='store_true',
+        help='Aggiorna dati da AdHoc prima dello scoring'
+    )
+    parser.add_argument(
+        '--refresh-days',
+        type=int,
+        default=30,
+        help='Giorni di dati da importare con --refresh-data (default: 30)'
     )
     parser.add_argument(
         '--no-save',
@@ -58,6 +70,22 @@ def main():
     )
 
     logger = logging.getLogger('score_fleet')
+
+    # Refresh dati se richiesto
+    if args.refresh_data:
+        logger.info(f"Aggiornamento dati da AdHoc (ultimi {args.refresh_days} giorni)...")
+        try:
+            from db.ingest import ingest_from_adhoc
+
+            data_start = date.today() - timedelta(days=args.refresh_days)
+            data_end = date.today()
+
+            logger.info(f"Periodo: {data_start} → {data_end}")
+            n_rows = ingest_from_adhoc(data_start, data_end)
+            logger.info(f"Importate {n_rows} nuove righe da AdHoc")
+        except Exception as e:
+            logger.error(f"Errore refresh dati: {e}")
+            logger.warning("Continuo con dati esistenti...")
 
     # Import dopo setup path
     from scoring.predict import (
