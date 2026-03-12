@@ -334,6 +334,127 @@ class MaintenanceDataLoader:
             data_osservazione_fine=data_stop
         )
 
+    def carica_da_sqlite(self) -> DatasetManutenzione:
+        """
+        Carica dati dal database SQLite maintenance.db.
+
+        Questo è il metodo preferito per caricare i dati nella chat,
+        in quanto usa lo stesso database usato per il training ML.
+
+        Returns:
+            DatasetManutenzione popolato
+        """
+        import sys
+        from pathlib import Path
+
+        # Aggiungi path progetto per import db
+        project_root = Path(__file__).parent.parent.parent
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+
+        from db.init import get_connection
+
+        logger.info("Caricamento dati da SQLite maintenance.db")
+
+        conn = get_connection()
+
+        # Query maintenance_history
+        rows = conn.execute("""
+            SELECT targa, azienda, descrizione, dettaglio,
+                   data_intervento, costo, data_imm
+            FROM maintenance_history
+            ORDER BY data_intervento
+        """).fetchall()
+
+        logger.info(f"Trovati {len(rows)} record in maintenance_history")
+
+        eventi = []
+        mezzi_dict = {}  # targa -> Mezzo
+
+        for row in rows:
+            try:
+                targa = row["targa"]
+                if not targa:
+                    continue
+
+                # Parse data intervento
+                data_evento = self._parse_data_adhoc(row["data_intervento"])
+                if not data_evento:
+                    continue
+
+                # Parse data immatricolazione
+                data_immatricolazione = self._parse_data_adhoc(row["data_imm"])
+
+                # Determina tipo mezzo dal pattern targa
+                tipo_mezzo = self._classifica_tipo_mezzo_da_targa(targa)
+
+                # Categorizza l'intervento
+                descrizione = row["descrizione"] or ""
+                dettaglio = row["dettaglio"] or ""
+                categorie_str = categorizza_riga(descrizione, dettaglio)
+
+                # Converti stringhe in enum CategoriaIntervento
+                categorie_enum = [
+                    CategoriaIntervento.from_string(c) for c in categorie_str
+                ]
+
+                # Calcola pesi proporzionali
+                n_categorie = len(categorie_enum)
+                pesi = [1.0 / n_categorie] * n_categorie if n_categorie > 0 else [1.0]
+
+                # Retrocompatibilità: usa prima categoria per tipo_guasto
+                categoria_principale = categorie_str[0] if categorie_str else "NON CLASSIFICATO"
+                tipo_guasto_str = categoria_to_tipo_guasto(categoria_principale)
+                tipo_guasto = self._parse_tipo_guasto(tipo_guasto_str)
+
+                # Parse costo
+                costo = float(row["costo"] or 0)
+
+                # Crea evento
+                evento = EventoManutenzione(
+                    mezzo_id=targa,
+                    tipo_mezzo=tipo_mezzo,
+                    tipo_guasto=tipo_guasto,
+                    data_evento=data_evento,
+                    data_acquisto=None,
+                    data_immatricolazione=data_immatricolazione,
+                    descrizione=f"{descrizione} - {dettaglio}".strip(" -"),
+                    costo=costo,
+                    straordinario=True,
+                    categorie=categorie_enum,
+                    pesi_categorie=pesi
+                )
+                eventi.append(evento)
+
+                # Traccia mezzo
+                if targa not in mezzi_dict:
+                    mezzi_dict[targa] = Mezzo(
+                        mezzo_id=targa,
+                        tipo_mezzo=tipo_mezzo,
+                        data_acquisto=None,
+                        data_immatricolazione=data_immatricolazione,
+                        targa=targa
+                    )
+                else:
+                    # Aggiorna data immatricolazione se disponibile
+                    mezzo = mezzi_dict[targa]
+                    if data_immatricolazione and not mezzo.data_immatricolazione:
+                        mezzo.data_immatricolazione = data_immatricolazione
+
+            except Exception as e:
+                logger.warning(f"Errore parsing riga SQLite: {e}")
+                continue
+
+        conn.close()
+
+        logger.info(f"Caricati {len(eventi)} eventi per {len(mezzi_dict)} mezzi da SQLite")
+
+        return DatasetManutenzione(
+            eventi=eventi,
+            mezzi=list(mezzi_dict.values()),
+            data_osservazione_fine=date.today()
+        )
+
     def _parse_data_adhoc(self, valore) -> Optional[date]:
         """
         Parse data da API AdHoc.

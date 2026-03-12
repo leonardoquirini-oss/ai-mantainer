@@ -59,6 +59,11 @@ def main():
         action='store_true',
         help='Output verboso'
     )
+    parser.add_argument(
+        '--all-vehicles',
+        action='store_true',
+        help='Valuta tutti i mezzi, non solo quelli attivi'
+    )
 
     args = parser.parse_args()
 
@@ -123,9 +128,11 @@ def main():
 
     else:
         # Scoring completo flotta
-        logger.info("Avvio scoring flotta completa...")
+        filter_active = not args.all_vehicles
+        mode = "tutti i mezzi" if args.all_vehicles else "solo mezzi attivi"
+        logger.info(f"Avvio scoring flotta ({mode})...")
 
-        n_scores = score_fleet(save_to_db=not args.no_save)
+        n_scores = score_fleet(save_to_db=not args.no_save, filter_active=filter_active)
 
         if n_scores == 0:
             logger.error("Nessun score calcolato. Verificare modelli e dati.")

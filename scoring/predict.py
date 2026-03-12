@@ -6,8 +6,9 @@ con pesi decrescenti e scala a 0-100.
 """
 
 import logging
+import re
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Set
 from datetime import datetime
 
 import numpy as np
@@ -42,6 +43,32 @@ RISK_THRESHOLDS = {
     'giallo': 25,   # >= 25
     'verde': 0,     # < 25
 }
+
+
+def normalize_targa(targa: str) -> str:
+    """
+    Normalizza targa per matching con lista_mezzi_attivi (TARGATRIM).
+
+    Il template lista_mezzi_attivi restituisce:
+    - Veicoli/Semirimorchi: targa senza spazi (AA48020)
+    - Container: solo parte numerica (1234 invece di GBTU 1234.5)
+
+    Args:
+        targa: Targa originale dal DB manutenzioni
+
+    Returns:
+        Targa normalizzata per matching
+    """
+    targa = targa.strip().upper()
+
+    if targa.startswith('GBTU'):
+        # Estrai parte numerica: "GBTU 1234.5" -> "1234", "GBTU 1234-3" -> "1234"
+        match = re.search(r'GBTU\s*(\d+)', targa)
+        if match:
+            return match.group(1)
+
+    # Per altri veicoli: rimuovi spazi
+    return targa.replace(' ', '')
 
 
 def load_models() -> Dict[str, Any]:
@@ -258,7 +285,8 @@ def compute_all_risk_scores(
 
 def score_fleet(
     save_to_db: bool = True,
-    tipi_guasto: Optional[List[str]] = None
+    tipi_guasto: Optional[List[str]] = None,
+    filter_active: bool = True
 ) -> int:
     """
     Calcola risk score per tutte le targhe della flotta.
@@ -268,6 +296,7 @@ def score_fleet(
     Args:
         save_to_db: Se True, salva su DB
         tipi_guasto: Lista di tipi_guasto da calcolare (default: tutti)
+        filter_active: Se True, valuta solo mezzi attivi (default: True)
 
     Returns:
         Numero di score calcolati
@@ -286,6 +315,35 @@ def score_fleet(
     if all_features.empty:
         logger.error("Nessuna feature disponibile")
         return 0
+
+    total_targhe = len(all_features['targa'].unique())
+
+    # Filtra solo mezzi attivi se richiesto
+    if filter_active:
+        try:
+            from agent.connectors.adhoc_connector import AdHocConnector
+
+            connector = AdHocConnector()
+            mezzi_attivi = connector.get_mezzi_attivi()  # set di TARGATRIM
+            connector.close()
+
+            # Normalizza targhe del DB per matching con TARGATRIM
+            # Container GBTU: estrai parte numerica
+            # Altri: rimuovi spazi
+            targhe_db = all_features['targa'].unique()
+            targhe_attive = set()
+
+            for targa in targhe_db:
+                normalized = normalize_targa(targa)
+                if normalized in mezzi_attivi:
+                    targhe_attive.add(targa)
+
+            all_features = all_features[all_features['targa'].isin(targhe_attive)]
+            logger.info(f"Mezzi attivi da AdHoc: {len(mezzi_attivi)}")
+            logger.info(f"Targhe matchate: {len(targhe_attive)} su {total_targhe} nel DB")
+        except Exception as e:
+            logger.warning(f"Impossibile recuperare mezzi attivi: {e}")
+            logger.warning("Continuo con tutte le targhe...")
 
     targhe = all_features['targa'].unique()
     logger.info(f"Scoring {len(targhe)} targhe...")

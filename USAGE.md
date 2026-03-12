@@ -63,7 +63,7 @@ python scripts/train_models.py --tipo-guasto freni
 Calcola il risk score (0-100) per ogni coppia (targa, tipo_guasto).
 
 ```bash
-# Scoring con refresh dati (uso quotidiano)
+# Scoring con refresh dati (uso quotidiano, solo mezzi attivi)
 python scripts/score_fleet.py --refresh-data
 
 # Refresh ultimi 7 giorni invece di 30
@@ -77,6 +77,9 @@ python scripts/score_fleet.py --no-save
 
 # Mostra veicoli con score >= 70
 python scripts/score_fleet.py --min-score 70
+
+# Valuta TUTTI i mezzi (anche dismessi)
+python scripts/score_fleet.py --all-vehicles
 ```
 
 **Opzioni:**
@@ -88,6 +91,7 @@ python scripts/score_fleet.py --min-score 70
 | `--targa` | Calcola solo per una targa specifica |
 | `--min-score` | Soglia per mostrare veicoli ad alto rischio (default: 50) |
 | `--no-save` | Non salvare su DB |
+| `--all-vehicles` | Valuta tutti i mezzi, non solo quelli attivi |
 | `--verbose`, `-v` | Output dettagliato |
 
 **Output:**

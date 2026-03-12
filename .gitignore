@@ -31,6 +31,14 @@ logs/
 data/*.json
 .cache/
 
+# Database
+data/*.db
+
+# Trained models
+models/*.joblib
+models/*_metrics.json
+models/training_summary.json
+
 # OS
 .DS_Store
 Thumbs.db

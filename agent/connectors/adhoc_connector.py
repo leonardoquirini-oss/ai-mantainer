@@ -222,6 +222,27 @@ class AdHocConnector:
         logger.info(f"AdHoc get_manutenzioni RESULT: {len(data)} interventi")
         return data
 
+    def get_mezzi_attivi(self) -> set:
+        """
+        Recupera il set delle targhe normalizzate dei mezzi attualmente attivi.
+
+        Usa il template 'lista_mezzi_attivi' che restituisce tutti i veicoli
+        e container non ancora dismessi. Usa la colonna TARGATRIM che contiene
+        le targhe senza spazi e per i container solo la parte numerica.
+
+        Returns:
+            Set di targhe normalizzate (stringhe uppercase senza spazi)
+        """
+        logger.info("AdHoc get_mezzi_attivi | recupero lista mezzi attivi")
+
+        result = self.execute_template("lista_mezzi_attivi", {}, output_format="csv")
+        data = result.get("data", [])
+
+        targhe = {row['TARGATRIM'].strip().upper() for row in data if row.get('TARGATRIM')}
+        logger.info(f"AdHoc get_mezzi_attivi RESULT: {len(targhe)} mezzi attivi")
+
+        return targhe
+
     def health_check(self) -> bool:
         """Verifica la connessione all'API"""
         try:
