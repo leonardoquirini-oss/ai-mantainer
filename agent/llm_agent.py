@@ -41,6 +41,9 @@ TOOL DISPONIBILI:
 - analizza_mezzo: analisi NHPP per singolo mezzo
 - get_mezzi_critici: lista mezzi in deterioramento
 - get_previsioni_guasti: previsioni guasti futuri
+- get_fleet_risk_summary: risk score ML di tutta la flotta (filtrabile per azienda)
+- get_vehicle_risk: risk score ML dettagliato per singolo veicolo
+- get_high_risk_vehicles: veicoli con risk score sopra soglia (default 70)
 
 QUANDO L'UTENTE CHIEDE:
 - "carica dati" / "importa" → USA carica_dati_csv
@@ -52,6 +55,8 @@ QUANDO L'UTENTE CHIEDE:
 - "analizza mezzo X" → USA analizza_mezzo
 - "mezzi critici" / "deterioramento" → USA get_mezzi_critici
 - "previsioni" / "guasti futuri" → USA get_previsioni_guasti
+- "rischio" / "risk score" / "alto rischio" → USA get_fleet_risk_summary o get_high_risk_vehicles
+- "rischio di [targa]" / "risk score [targa]" → USA get_vehicle_risk
 
 INTERPRETAZIONE RISULTATI:
 

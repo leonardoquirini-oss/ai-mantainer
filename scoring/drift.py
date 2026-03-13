@@ -173,7 +173,7 @@ def check_all_models_drift(
 
         # Prepara X, y
         feature_cols = [c for c in FEATURE_COLS if c in df_tipo.columns]
-        X_recent = df_tipo[feature_cols].fillna(0)
+        X_recent = df_tipo[feature_cols]
         y_recent = df_tipo[target_col]
 
         # Carica baseline PR-AUC dalle metriche salvate

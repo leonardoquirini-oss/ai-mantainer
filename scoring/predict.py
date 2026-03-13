@@ -162,8 +162,8 @@ def compute_risk_score(
     feature_cols = [c for c in FEATURE_COLS if c in X_current.columns]
     X = X_current[feature_cols].copy()
 
-    # Gestisci NaN
-    X = X.fillna(0)
+    # NaN lasciati intatti: XGBoost gestisce NaN nativamente
+    # imparando la direzione di split ottimale per i dati mancanti
 
     # Calcola probabilità per ogni orizzonte
     probs = {}

@@ -77,15 +77,16 @@ def _clean_azienda(azienda: str) -> str:
 def ingest_from_adhoc(
     data_start: Optional[date] = None,
     data_stop: Optional[date] = None,
-    skip_duplicates: bool = True
 ) -> int:
     """
     Importa dati dall'API AdHoc in maintenance_history.
 
+    La deduplicazione è gestita dal vincolo UNIQUE a livello DB
+    su (azienda, seriale_doc, targa, data_intervento).
+
     Args:
         data_start: Data inizio periodo (default: 01/01/2015)
         data_stop: Data fine periodo (default: oggi)
-        skip_duplicates: Se True, evita di reinserire record già presenti
 
     Returns:
         Numero di record inseriti
@@ -177,47 +178,43 @@ def ingest_from_adhoc(
 
     conn = get_connection()
 
-    if skip_duplicates:
-        # Recupera chiavi esistenti per deduplicazione
-        existing = set()
-        cursor = conn.execute("""
-            SELECT azienda, seriale_doc, targa, data_intervento
-            FROM maintenance_history
-        """)
-        for row in cursor:
-            existing.add((row[0], row[1], row[2], row[3]))
+    # Assicura che l'indice UNIQUE esista per la deduplicazione a livello DB
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_mh_unique
+        ON maintenance_history(azienda, seriale_doc, targa, data_intervento)
+    """)
 
-        # Filtra solo nuovi record
-        new_records = [
-            r for r in records
-            if (r["azienda"], r["seriale_doc"], r["targa"], r["data_intervento"]) not in existing
-        ]
-        logger.info(f"Record già presenti: {len(records) - len(new_records)}")
-    else:
-        new_records = records
+    # Conta record prima dell'inserimento
+    count_before = conn.execute(
+        "SELECT COUNT(*) FROM maintenance_history"
+    ).fetchone()[0]
 
-    if not new_records:
-        logger.info("Nessun nuovo record da inserire")
-        conn.close()
-        return 0
-
-    # Insert batch
+    # INSERT OR IGNORE: il vincolo UNIQUE gestisce la deduplicazione
     conn.executemany("""
-        INSERT INTO maintenance_history
+        INSERT OR IGNORE INTO maintenance_history
             (azienda, seriale_doc, descrizione, dettaglio, targa,
              data_intervento, causale, costo, data_imm)
         VALUES
             (:azienda, :seriale_doc, :descrizione, :dettaglio, :targa,
              :data_intervento, :causale, :costo, :data_imm)
-    """, new_records)
+    """, records)
 
     conn.commit()
+
+    count_after = conn.execute(
+        "SELECT COUNT(*) FROM maintenance_history"
+    ).fetchone()[0]
     conn.close()
 
-    logger.info(f"Inseriti {len(new_records)} nuovi record")
-    print(f"Inseriti {len(new_records)} nuovi record in maintenance_history")
+    inserted = count_after - count_before
+    skipped_dupes = len(records) - inserted
+    if skipped_dupes > 0:
+        logger.info(f"Record duplicati ignorati: {skipped_dupes}")
 
-    return len(new_records)
+    logger.info(f"Inseriti {inserted} nuovi record")
+    print(f"Inseriti {inserted} nuovi record in maintenance_history")
+
+    return inserted
 
 
 def get_import_stats() -> Dict[str, Any]:

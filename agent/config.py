@@ -70,15 +70,29 @@ class Settings:
             api_key=os.environ.get("OPENROUTER_API_KEY") or llm_data.get("api_key")
         )
 
+        adhoc_api_key = os.environ.get("ADHOC_API_KEY") or adhoc_data.get("api_key")
+        if not adhoc_api_key:
+            raise ValueError(
+                "ADHOC_API_KEY non configurata. "
+                "Imposta la variabile d'ambiente ADHOC_API_KEY o configura api_key in settings.yaml"
+            )
+
         adhoc_config = APIConfig(
             base_url=adhoc_data.get("base_url", "http://192.168.0.12:9100"),
-            api_key=os.environ.get("ADHOC_API_KEY") or adhoc_data.get("api_key", "12909db2-ffaa-4e55-8ef7-20d08bdfffa0"),
+            api_key=adhoc_api_key,
             timeout=adhoc_data.get("timeout", 60.0)
         )
 
+        tir_api_key = os.environ.get("TIR_API_KEY") or tir_data.get("api_key")
+        if not tir_api_key:
+            raise ValueError(
+                "TIR_API_KEY non configurata. "
+                "Imposta la variabile d'ambiente TIR_API_KEY o configura api_key in settings.yaml"
+            )
+
         tir_config = APIConfig(
             base_url=tir_data.get("base_url", "http://192.168.0.12:9090"),
-            api_key=os.environ.get("TIR_API_KEY") or tir_data.get("api_key", "afd633be-262b-4d62-9089-bfe300a58ffa"),
+            api_key=tir_api_key,
             timeout=tir_data.get("timeout", 120.0)  # Timeout più lungo per export CSV
         )
 

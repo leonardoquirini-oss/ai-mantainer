@@ -58,12 +58,10 @@ def merge_features_with_target(
     reference_dates: Optional[List[pd.Timestamp]] = None
 ) -> pd.DataFrame:
     """
-    Unisce il dataset target con le feature calcolate.
+    Unisce il dataset target con le feature calcolate per coorti mensili.
 
-    Per ogni riga del target, calcola le feature alla data dell'intervento.
-
-    Nota: questo è computazionalmente costoso per dataset grandi.
-    Per produzione, usare feature pre-calcolate.
+    Per ogni coorte mensile, calcola le feature con reference_date = fine mese,
+    evitando data leakage (le feature non vedono eventi futuri).
 
     Args:
         target_df: DataFrame con target (da build_training_dataset)
@@ -72,31 +70,54 @@ def merge_features_with_target(
     Returns:
         DataFrame con target + feature
     """
-    logger.info("Merging features with target...")
+    logger.info("Merging features with target (per-cohort, no data leakage)...")
 
-    # Per semplicità, usiamo le feature calcolate a date fisse
-    # In produzione andrebbero calcolate per ogni data_intervento
-    all_features = build_features()
+    # Assicura che data_intervento sia datetime
+    target_df = target_df.copy()
+    target_df['data_intervento'] = pd.to_datetime(target_df['data_intervento'])
 
-    # Merge per targa
-    merged = target_df.merge(
-        all_features,
-        on='targa',
-        how='left',
-        suffixes=('', '_feat')
-    )
+    # Raggruppa per mese di data_intervento
+    target_df['cohort'] = target_df['data_intervento'].dt.to_period('M')
+    cohorts = target_df['cohort'].unique()
+
+    logger.info(f"Calcolo feature per {len(cohorts)} coorti mensili...")
+
+    merged_parts = []
+    for cohort in sorted(cohorts):
+        # Fine mese come reference_date
+        ref_date = cohort.to_timestamp(how='end')
+
+        # Feature calcolate solo con dati <= ref_date
+        cohort_features = build_features(reference_date=ref_date)
+
+        # Righe target di questa coorte
+        cohort_target = target_df[target_df['cohort'] == cohort]
+
+        # Merge per targa
+        merged = cohort_target.merge(
+            cohort_features,
+            on='targa',
+            how='left',
+            suffixes=('', '_feat')
+        )
+        merged_parts.append(merged)
+
+    result = pd.concat(merged_parts, ignore_index=True)
+
+    # Rimuovi colonna ausiliaria
+    result = result.drop(columns=['cohort'])
 
     # Rimuovi righe senza feature
-    before = len(merged)
-    merged = merged.dropna(subset=['days_since_last'])
-    after = len(merged)
+    before = len(result)
+    result = result.dropna(subset=['days_since_last'])
+    after = len(result)
 
     if before > after:
         logger.warning(f"Rimosse {before - after} righe senza feature")
 
-    logger.info(f"Dataset merged: {len(merged)} righe")
+    logger.info(f"Dataset merged: {len(result)} righe")
 
-    return merged
+    return result
 
 
 def prepare_training_data(
@@ -416,6 +437,16 @@ def train_and_save_model(
     logger.info(f"Modello salvato: {model_path}")
 
     # Salva metriche
+    # Feature importance
+    feature_importance = {}
+    if hasattr(model, 'feature_importances_'):
+        for col, imp in zip(X_train.columns, model.feature_importances_):
+            feature_importance[col] = round(float(imp), 4)
+        # Ordina per importanza decrescente
+        feature_importance = dict(
+            sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
+        )
+
     metrics = {
         'tipo_guasto': tipo_guasto,
         'horizon_days': horizon_days,
@@ -427,6 +458,7 @@ def train_and_save_model(
         'positive_rate_test': round(y_test.mean(), 4),
         'params': params,
         'feature_cols': list(X_train.columns),
+        'feature_importance': feature_importance,
     }
 
     metrics_path = MODELS_DIR / f"risk_{horizon_days}d_{tipo_guasto}_metrics.json"

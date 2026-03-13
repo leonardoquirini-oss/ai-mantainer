@@ -57,6 +57,7 @@ class TIRConnector:
                     "Content-Type": "application/json",
                 },
                 timeout=self.config.timeout,
+                transport=httpx.HTTPTransport(retries=3),
             )
         return self._client
 

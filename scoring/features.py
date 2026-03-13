@@ -18,8 +18,15 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from db.init import get_connection
+from agent.utils.categorizzatore import categorizza_riga, categoria_to_tipo_guasto
 
 logger = logging.getLogger("maintenance-agent.scoring.features")
+
+# Tipi guasto per feature per-tipo
+TIPI_GUASTO_FEATURE = [
+    'freni', 'pneumatici', 'motore', 'elettrico', 'carrozzeria',
+    'sospensioni', 'idraulico', 'revisione', 'altro', 'tagliando'
+]
 
 # Feature columns per training
 FEATURE_COLS = [
@@ -38,7 +45,15 @@ FEATURE_COLS = [
     'km_stimati_settimana',
     'month_sin',
     'month_cos',
+    # Interazioni
+    'days_ratio_x_cost_trend',
+    'km_ratio_x_vehicle_age',
 ]
+
+# Feature per-tipo_guasto (aggiunte dinamicamente)
+for _tipo in TIPI_GUASTO_FEATURE:
+    FEATURE_COLS.append(f'days_since_last_{_tipo}')
+    FEATURE_COLS.append(f'count_{_tipo}_12m')
 
 
 def build_features(reference_date: Optional[pd.Timestamp] = None) -> pd.DataFrame:
@@ -60,12 +75,22 @@ def build_features(reference_date: Optional[pd.Timestamp] = None) -> pd.DataFram
 
     # --- Storico manutenzioni ---
     maint = pd.read_sql("""
-        SELECT targa, data_intervento, costo, data_imm, azienda
+        SELECT targa, data_intervento, costo, data_imm, azienda, descrizione, dettaglio
         FROM maintenance_history
         ORDER BY targa, data_intervento
     """, conn)
     maint['data_intervento'] = pd.to_datetime(maint['data_intervento'])
     maint['data_imm'] = pd.to_datetime(maint['data_imm'])
+
+    # Categorizza interventi per feature per-tipo_guasto
+    def _get_tipi_guasto(row):
+        cats = categorizza_riga(row.get('descrizione', ''), row.get('dettaglio', ''))
+        return list(set(categoria_to_tipo_guasto(c) for c in cats))
+
+    maint['tipi_guasto'] = maint.apply(_get_tipi_guasto, axis=1)
+
+    # Filtra manutenzioni a <= reference_date per evitare data leakage
+    maint = maint[maint['data_intervento'] <= ref]
 
     # --- Km reali da vehicle_km (vista che unifica motrice + semirimorchio) ---
     trips = pd.read_sql("""
@@ -74,6 +99,9 @@ def build_features(reference_date: Optional[pd.Timestamp] = None) -> pd.DataFram
         ORDER BY targa, data_viaggio
     """, conn)
     trips['data_viaggio'] = pd.to_datetime(trips['data_viaggio'])
+
+    # Filtra viaggi a <= reference_date per evitare data leakage
+    trips = trips[trips['data_viaggio'] <= ref]
 
     conn.close()
 
@@ -172,6 +200,36 @@ def build_features(reference_date: Optional[pd.Timestamp] = None) -> pd.DataFram
         row['month_sin'] = np.sin(2 * np.pi * ref.month / 12)
         row['month_cos'] = np.cos(2 * np.pi * ref.month / 12)
 
+        # --- Feature per tipo_guasto ---
+        for tipo in TIPI_GUASTO_FEATURE:
+            m_tipo = m[m['tipi_guasto'].apply(lambda x: tipo in x)] if not m.empty else m
+            if not m.empty and not m_tipo.empty:
+                last_tipo = m_tipo['data_intervento'].max()
+                row[f'days_since_last_{tipo}'] = (ref - last_tipo).days
+                row[f'count_{tipo}_12m'] = int(
+                    (m_tipo['data_intervento'] >= ref - pd.Timedelta(days=365)).sum()
+                )
+            else:
+                row[f'days_since_last_{tipo}'] = None
+                row[f'count_{tipo}_12m'] = 0
+
+        # --- Interazioni ---
+        days_ratio = row.get('days_ratio')
+        cost_trend = row.get('cost_trend')
+        km_ratio = row.get('km_ratio')
+        vehicle_age = row.get('vehicle_age_days')
+
+        row['days_ratio_x_cost_trend'] = (
+            days_ratio * cost_trend
+            if days_ratio is not None and cost_trend is not None
+            else None
+        )
+        row['km_ratio_x_vehicle_age'] = (
+            km_ratio * vehicle_age
+            if km_ratio is not None and vehicle_age is not None
+            else None
+        )
+
         features.append(row)
 
     df = pd.DataFrame(features)
@@ -199,13 +257,19 @@ def build_features_for_targa(targa: str, reference_date: Optional[pd.Timestamp] 
 
     # Manutenzioni per questa targa
     maint = pd.read_sql("""
-        SELECT data_intervento, costo, data_imm, azienda
+        SELECT data_intervento, costo, data_imm, azienda, descrizione, dettaglio
         FROM maintenance_history
         WHERE UPPER(TRIM(targa)) = ?
         ORDER BY data_intervento
     """, conn, params=(targa_clean,))
     maint['data_intervento'] = pd.to_datetime(maint['data_intervento'])
     maint['data_imm'] = pd.to_datetime(maint['data_imm'])
+
+    # Categorizza per feature per-tipo
+    maint['tipi_guasto'] = maint.apply(
+        lambda r: list(set(categoria_to_tipo_guasto(c) for c in categorizza_riga(r.get('descrizione', ''), r.get('dettaglio', '')))),
+        axis=1
+    )
 
     # Viaggi per questa targa
     trips = pd.read_sql("""
@@ -285,6 +349,36 @@ def build_features_for_targa(targa: str, reference_date: Optional[pd.Timestamp] 
 
     row['month_sin'] = np.sin(2 * np.pi * ref.month / 12)
     row['month_cos'] = np.cos(2 * np.pi * ref.month / 12)
+
+    # --- Feature per tipo_guasto ---
+    for tipo in TIPI_GUASTO_FEATURE:
+        m_tipo = maint[maint['tipi_guasto'].apply(lambda x: tipo in x)] if not maint.empty else maint
+        if not maint.empty and not m_tipo.empty:
+            last_tipo = m_tipo['data_intervento'].max()
+            row[f'days_since_last_{tipo}'] = (ref - last_tipo).days
+            row[f'count_{tipo}_12m'] = int(
+                (m_tipo['data_intervento'] >= ref - pd.Timedelta(days=365)).sum()
+            )
+        else:
+            row[f'days_since_last_{tipo}'] = None
+            row[f'count_{tipo}_12m'] = 0
+
+    # --- Interazioni ---
+    days_ratio = row.get('days_ratio')
+    cost_trend = row.get('cost_trend')
+    km_ratio = row.get('km_ratio')
+    vehicle_age = row.get('vehicle_age_days')
+
+    row['days_ratio_x_cost_trend'] = (
+        days_ratio * cost_trend
+        if days_ratio is not None and cost_trend is not None
+        else None
+    )
+    row['km_ratio_x_vehicle_age'] = (
+        km_ratio * vehicle_age
+        if km_ratio is not None and vehicle_age is not None
+        else None
+    )
 
     return pd.DataFrame([row])
 

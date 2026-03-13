@@ -28,6 +28,9 @@ from .sqlite_tools import (
     get_trip_history,
     get_fleet_km_ranking,
     get_vehicle_combinations,
+    get_fleet_risk_summary,
+    get_vehicle_risk,
+    get_high_risk_vehicles,
 )
 
 
@@ -880,6 +883,10 @@ TOOL_FUNCTIONS = {
     "get_trip_history": get_trip_history,
     "get_fleet_km_ranking": get_fleet_km_ranking,
     "get_vehicle_combinations": get_vehicle_combinations,
+    # Tools risk score ML
+    "get_fleet_risk_summary": get_fleet_risk_summary,
+    "get_vehicle_risk": get_vehicle_risk,
+    "get_high_risk_vehicles": get_high_risk_vehicles,
 }
 
 
@@ -1449,6 +1456,56 @@ TOOLS_SCHEMA = [
                     "type": "integer",
                     "description": "Numero massimo di combinazioni (default: 20)",
                     "default": 20
+                }
+            }
+        }
+    },
+    # =========================================================================
+    # TOOLS RISK SCORE ML
+    # =========================================================================
+    {
+        "name": "get_fleet_risk_summary",
+        "description": "Restituisce il risk score ML attuale di tutta la flotta, ordinato per rischio decrescente. Filtrabile per azienda (G, B, C).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "azienda": {
+                    "type": "string",
+                    "description": "Filtra per azienda: G, B o C. Ometti per tutto il gruppo.",
+                    "enum": ["G", "B", "C"]
+                }
+            }
+        }
+    },
+    {
+        "name": "get_vehicle_risk",
+        "description": "Restituisce il risk score ML dettagliato per un singolo veicolo, inclusi fattori SHAP e feature calcolate.",
+        "parameters": {
+            "type": "object",
+            "required": ["targa"],
+            "properties": {
+                "targa": {
+                    "type": "string",
+                    "description": "Targa del veicolo"
+                }
+            }
+        }
+    },
+    {
+        "name": "get_high_risk_vehicles",
+        "description": "Restituisce tutti i veicoli con risk score sopra la soglia. Default soglia: 70 (livello arancio+rosso). Filtrabile per azienda.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "threshold": {
+                    "type": "number",
+                    "description": "Soglia minima di risk score 0-100 (default: 70)",
+                    "default": 70.0
+                },
+                "azienda": {
+                    "type": "string",
+                    "description": "Filtra per azienda: G, B o C. Ometti per tutto il gruppo.",
+                    "enum": ["G", "B", "C"]
                 }
             }
         }

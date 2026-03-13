@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS maintenance_history (
     inserted_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Vincolo unicità per deduplicazione
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mh_unique
+    ON maintenance_history(azienda, seriale_doc, targa, data_intervento);
+
 -- Indici per le query più frequenti dell'agente
 CREATE INDEX IF NOT EXISTS idx_mh_targa          ON maintenance_history(targa);
 CREATE INDEX IF NOT EXISTS idx_mh_data           ON maintenance_history(data_intervento);
@@ -69,9 +73,9 @@ CREATE TABLE IF NOT EXISTS risk_scores (
 
     risk_score      REAL    NOT NULL,   -- 0-100
     risk_level      TEXT    NOT NULL,   -- 'verde' | 'giallo' | 'arancio' | 'rosso'
-    prob_fail_7d    REAL,               -- probabilità guasto entro 7 giorni
-    prob_fail_30d   REAL,               -- probabilità guasto entro 30 giorni
-    prob_fail_90d   REAL,               -- probabilità guasto entro 90 giorni
+    prob_7d         REAL,               -- probabilità guasto entro 7 giorni
+    prob_30d        REAL,               -- probabilità guasto entro 30 giorni
+    prob_90d        REAL,               -- probabilità guasto entro 90 giorni
     top_factors     TEXT,               -- JSON: [{"feature": "days_ratio", "impact": 1.8}, ...]
     note_agente     TEXT                -- testo generato dall'LLM (diagnosi breve)
 );

@@ -146,8 +146,8 @@ def get_fleet_risk_summary(azienda: Optional[str] = None) -> Dict[str, Any]:
             rs.azienda,
             rs.risk_score,
             rs.risk_level,
-            rs.prob_fail_7d,
-            rs.prob_fail_30d,
+            rs.prob_7d,
+            rs.prob_30d,
             rs.top_factors,
             rs.computed_at
         FROM risk_scores rs
